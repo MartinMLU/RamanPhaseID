@@ -1,0 +1,9 @@
+streamlit
+numpy
+scipy
+matplotlib
+pandas
+tqdm
+scikit-learn
+scikit-learn-extra
+hnswlib
