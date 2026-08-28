@@ -1,0 +1,21 @@
+App,TopN,Hits,Total,Percent
+Raman Match,Top1,18,48,37.5
+Raman Match,Top3,28,48,58.333333333333336
+Raman Match,Top6,31,48,64.58333333333333
+Raman Match,Top10,31,48,64.58333333333333
+RamanLab MultiWindow,Top1,25,48,52.083333333333336
+RamanLab MultiWindow,Top3,29,48,60.416666666666664
+RamanLab MultiWindow,Top6,30,48,62.5
+RamanLab MultiWindow,Top10,32,48,66.66666666666667
+RamanLab MineralVibration,Top1,29,48,60.416666666666664
+RamanLab MineralVibration,Top3,30,48,62.5
+RamanLab MineralVibration,Top6,31,48,64.58333333333333
+RamanLab MineralVibration,Top10,31,48,64.58333333333333
+RamanLab Combined (MW+MV),Top1,29,48,60.416666666666664
+RamanLab Combined (MW+MV),Top3,32,48,66.66666666666667
+RamanLab Combined (MW+MV),Top6,33,48,68.75
+RamanLab Combined (MW+MV),Top10,35,48,72.91666666666667
+RamanPhaseID,Top1,48,48,100.0
+RamanPhaseID,Top3,48,48,100.0
+RamanPhaseID,Top6,48,48,100.0
+RamanPhaseID,Top10,48,48,100.0
