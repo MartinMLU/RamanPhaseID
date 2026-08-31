@@ -21,7 +21,7 @@ except Exception:
     pass
 
 APP_CANDIDATES = [
-    "RamanPhaseID_0p98beta.py",
+    "RamanPhaseID_0p99beta.py",
     "RamanPhaseID*.py",
 ]
 

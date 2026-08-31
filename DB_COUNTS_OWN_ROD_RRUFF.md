@@ -4,7 +4,7 @@ Count date: 2026-03-21
 
 ## Scope Used by App
 
-Counts are based on `MATCH_FOLDERS_STANDARD` in `RamanPhaseID_0p98beta.py` and loaded via `raman_core.load_reference_folders(...)` (same path used by the app sidebar cache overview).
+Counts are based on `MATCH_FOLDERS` in `RamanPhaseID_0p99beta.py` and loaded via the app's database inventory path (the same path used by the sidebar cache overview).
 
 - OWN: `databases/OWN`
 - ROD: `databases/ROD`
