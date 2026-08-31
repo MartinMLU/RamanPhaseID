@@ -6,4 +6,4 @@ pandas
 tqdm
 scikit-learn
 scikit-learn-extra
-hnswlib
+torch>=2.0

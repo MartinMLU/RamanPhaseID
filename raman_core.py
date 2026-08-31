@@ -12,7 +12,7 @@ for var in (
     os.environ.setdefault(var, "1")
 
 # --------------------------------------------------------------------------- #
-import io
+import csv
 import math
 import multiprocessing as mp
 import re
@@ -129,16 +129,154 @@ def _parse_rruff(path: Path) -> Tuple[np.ndarray, np.ndarray]:
 # --------------------------------------------------------------------------- #
 #                        Measurement-Parser                                   #
 # --------------------------------------------------------------------------- #
+_MEASUREMENT_DELIMITERS: tuple[str | None, ...] = (",", "\t", ";", None)
+_DECIMAL_COMMA_PATTERN = re.compile(
+    r"^[+-]?(?:\d+(?:,\d*)?|,\d+)(?:[eE][+-]?\d+)?$"
+)
+
+
+def _measurement_fields(line: str, delimiter: str | None) -> list[str]:
+    """Split one measurement record using one already-selected delimiter."""
+    if delimiter is None:
+        return re.split(r"\s+", line.strip())
+    try:
+        return next(csv.reader([line], delimiter=delimiter, skipinitialspace=True))
+    except csv.Error:
+        return []
+
+
+def _measurement_token(token: str | None, delimiter: str | None) -> str | None:
+    if token is None:
+        return None
+    value = token.strip().lstrip("\ufeff")
+    # Decimal commas are unambiguous when comma is not the field delimiter.
+    if delimiter != "," and _DECIMAL_COMMA_PATTERN.fullmatch(value):
+        value = value.replace(",", ".")
+    return value
+
+
+def _measurement_rows(
+    text: str,
+    delimiter: str | None,
+) -> list[tuple[int, str | None, str | None]]:
+    """Return the first two physical fields of each non-comment record."""
+    rows: list[tuple[int, str | None, str | None]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = _measurement_fields(line, delimiter)
+        first = fields[0] if len(fields) >= 1 else None
+        second = fields[1] if len(fields) >= 2 else None
+        rows.append(
+            (
+                line_number,
+                _measurement_token(first, delimiter),
+                _measurement_token(second, delimiter),
+            )
+        )
+    return rows
+
+
+def _coerce_measurement_rows(
+    rows: list[tuple[int, str | None, str | None]],
+) -> pd.DataFrame:
+    frame = pd.DataFrame(rows, columns=["line", "shift", "intensity"])
+    if frame.empty:
+        return frame
+    # Explicit coercion prevents ordinary, uncommented header text from leaking
+    # into the returned arrays as object/string values.
+    frame["shift"] = pd.to_numeric(frame["shift"], errors="coerce")
+    frame["intensity"] = pd.to_numeric(frame["intensity"], errors="coerce")
+    return frame
+
+
+def _detect_measurement_delimiter(text: str) -> str | None:
+    """Choose comma, tab, semicolon, or whitespace deterministically."""
+    best_delimiter: str | None = None
+    best_numeric_rows = -1
+    for delimiter in _MEASUREMENT_DELIMITERS:
+        frame = _coerce_measurement_rows(_measurement_rows(text, delimiter))
+        if frame.empty:
+            numeric_rows = 0
+        else:
+            numeric_rows = int(
+                (
+                    np.isfinite(frame["shift"].to_numpy(dtype=float))
+                    & np.isfinite(frame["intensity"].to_numpy(dtype=float))
+                ).sum()
+            )
+        # Candidate order is the documented tie-breaker; do not replace an
+        # equally scoring earlier candidate.
+        if numeric_rows > best_numeric_rows:
+            best_numeric_rows = numeric_rows
+            best_delimiter = delimiter
+    if best_numeric_rows <= 0:
+        raise ValueError(
+            "No numeric measurement rows were found in the first two columns "
+            "(supported delimiters: comma, tab, semicolon, or whitespace)."
+        )
+    return best_delimiter
+
+
 def parse_measurement(text: str) -> Tuple[np.ndarray, np.ndarray]:
-    df = pd.read_csv(
-        io.StringIO(text),
-        sep=r"\t|,|\s+",
-        engine="python",
-        comment="#",
-        header=None,
-        names=["shift", "intensity"],
-    ).dropna()
-    return df["shift"].to_numpy(), df["intensity"].to_numpy()
+    """Parse a measurement spectrum into canonical, numeric ``(x, y)`` arrays.
+
+    The first and second *physical* columns are always Raman shift and intensity;
+    any later columns are ignored. Leading nonnumeric records are treated as a
+    header. Once numeric data have started, a malformed/interspersed record is an
+    error rather than being silently skipped or remapped.
+
+    An input axis may be nondecreasing or nonincreasing. Exact duplicate shifts
+    are consolidated by their arithmetic-mean intensity, and output is strictly
+    increasing. A non-monotonic axis is rejected because interpolation and
+    point-spacing-dependent preprocessing otherwise become ambiguous.
+    """
+    if not isinstance(text, str):
+        raise TypeError("Measurement input must be decoded text.")
+
+    delimiter = _detect_measurement_delimiter(text)
+    frame = _coerce_measurement_rows(_measurement_rows(text, delimiter))
+    shift_values = frame["shift"].to_numpy(dtype=float)
+    intensity_values = frame["intensity"].to_numpy(dtype=float)
+    valid = np.isfinite(shift_values) & np.isfinite(intensity_values)
+
+    data_positions = np.flatnonzero(valid)
+    first_data_position = int(data_positions[0])
+    malformed_positions = np.flatnonzero(~valid & (np.arange(valid.size) > first_data_position))
+    if malformed_positions.size:
+        line_numbers = frame.iloc[malformed_positions]["line"].astype(int).tolist()
+        preview = ", ".join(str(number) for number in line_numbers[:5])
+        if len(line_numbers) > 5:
+            preview += ", ..."
+        raise ValueError(
+            "Malformed measurement row after numeric data started "
+            f"(line{'s' if len(line_numbers) != 1 else ''} {preview}); "
+            "the first two columns must both be finite numbers."
+        )
+
+    x = shift_values[valid]
+    y = intensity_values[valid]
+    if x.size < 2:
+        raise ValueError("A measurement spectrum must contain at least two numeric rows.")
+
+    dx = np.diff(x)
+    is_nondecreasing = bool(np.all(dx >= 0.0))
+    is_nonincreasing = bool(np.all(dx <= 0.0))
+    if not (is_nondecreasing or is_nonincreasing):
+        raise ValueError(
+            "Raman-shift values must be monotonic (entirely ascending or "
+            "entirely descending); sort or repair the input axis first."
+        )
+
+    unique_x, inverse, counts = np.unique(x, return_inverse=True, return_counts=True)
+    if unique_x.size < 2:
+        raise ValueError(
+            "A measurement spectrum must contain at least two distinct Raman shifts."
+        )
+    summed_y = np.bincount(inverse, weights=y, minlength=unique_x.size)
+    unique_y = summed_y / counts.astype(float)
+    return unique_x.astype(float, copy=False), unique_y.astype(float, copy=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +305,41 @@ def _normalize(y: np.ndarray):
 
 def _resample(src_x, src_y, tgt_x):
     return interp1d(src_x, src_y, kind="linear", bounds_error=False, fill_value=0.0)(tgt_x)
+
+
+def _resample_uniform_support(src_x, src_y, step_cm1: float = 1.0):
+    """Resample finite data to a globally anchored physical Raman-shift grid."""
+    x = np.asarray(src_x, dtype=float).reshape(-1)
+    y = np.asarray(src_y, dtype=float).reshape(-1)
+    if x.size != y.size:
+        raise ValueError("x and y must contain the same number of values")
+    finite = np.isfinite(x) & np.isfinite(y)
+    x = x[finite]
+    y = y[finite]
+    if x.size < 2:
+        return x, y
+
+    order = np.argsort(x, kind="mergesort")
+    x = x[order]
+    y = y[order]
+    unique_x, inverse = np.unique(x, return_inverse=True)
+    if unique_x.size != x.size:
+        sums = np.bincount(inverse, weights=y)
+        counts = np.bincount(inverse)
+        x = unique_x
+        y = sums / np.maximum(counts, 1)
+    if x.size < 2:
+        return x, y
+
+    step = float(step_cm1)
+    if not np.isfinite(step) or step <= 0.0:
+        raise ValueError("uniform resampling step must be positive")
+    first = math.ceil((float(x[0]) / step) - 1e-9)
+    last = math.floor((float(x[-1]) / step) + 1e-9)
+    if last < first:
+        return x, y
+    grid = np.arange(first, last + 1, dtype=float) * step
+    return grid, np.interp(grid, x, y)
 
 
 def _cosine(a, b):
@@ -231,7 +404,8 @@ def load_reference_folders(
 def _similarity_worker(entry: Dict, meas_x: np.ndarray, meas_proc: np.ndarray):
     p = entry["path"]
     db_x, db_y = (_parse_rruff if p.suffix.lower() == ".txt" else _parse_rod)(p)
-    db_proc = _normalize(_smooth(_resample(db_x, db_y, meas_x)))
+    # Reference spectra are interpolated to common support but never smoothed.
+    db_proc = _normalize(_resample(db_x, db_y, meas_x))
     return _cosine(meas_proc, db_proc), entry
 
 
@@ -260,6 +434,9 @@ def rank_matches(
         workers = max(1, (mp.cpu_count() or 1) - 1)
     workers = max(1, workers)
 
+    # Legacy API: keep lambda/window semantics fixed by preprocessing the
+    # measurement on the same 1 cm⁻¹ physical grid used by the main app.
+    meas_x, meas_y = _resample_uniform_support(meas_x, meas_y, step_cm1=1.0)
     meas_proc = _normalize(_smooth(meas_y - _baseline_als(meas_y)))
 
     results: List[Dict] = []
